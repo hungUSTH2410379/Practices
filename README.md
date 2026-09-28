@@ -13,6 +13,10 @@ Organized into separate folders for each practical exercise:
 * Practice 6
 * Practice 7
 * Practice 8
+* Practice 9
+* Practice 10
+* Practice 11
+* Proteus schematics
 
 
 ## Hardware and Software
