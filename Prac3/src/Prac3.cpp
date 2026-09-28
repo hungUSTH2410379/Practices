@@ -1,6 +1,5 @@
 #include <Arduino.h>
 
-// Khởi tạo Timer0 điều khiển Servo (Pin 6 / PD6 / OC0A)
 void servo_timer0_init() {
   DDRD |= (1 << PD6);
   TCCR0A = (1 << COM0A1) | (1 << WGM01) | (1 << WGM00);
@@ -8,7 +7,6 @@ void servo_timer0_init() {
   OCR0A = 23; // Vị trí giữa (~1.5 ms)
 }
 
-// Khởi tạo Timer1 điều khiển độ sáng LED (Pin 9 / PB1 / OC1A)
 void led_pwm_timer1_init() {
   DDRB |= (1 << PB1);
   TCCR1A = (1 << COM1A1) | (1 << WGM10);
