@@ -3,11 +3,35 @@
 #endif
 
 #include <avr/io.h>
+#include <avr/interrupt.h>
 #include <util/delay.h>
 #include <stdio.h>
 
-#define LCD_RS_PIN PB0
-#define LCD_E_PIN  PB1
+// Millis system tick using Timer0 CTC Mode
+volatile uint32_t timer0_millis = 0;
+
+void timer0_millis_init(void) {
+    TCCR0A = (1 << WGM01); // CTC Mode
+    OCR0A = 249;           // 16MHz / (64 * 1000) - 1 = 249 -> 1ms interrupt
+    TIMSK0 = (1 << OCIE0A);
+    TCCR0B = (1 << CS01) | (1 << CS00); // Prescaler 64
+}
+
+ISR(TIMER0_COMPA_vect) {
+    timer0_millis++;
+}
+
+uint32_t millis(void) {
+    uint32_t m;
+    cli();
+    m = timer0_millis;
+    sei();
+    return m;
+}
+
+// LCD Pins: RS=PB4 (D12), E=PB3 (D11), D4-D7=PD4-PD7 (D4-D7)
+#define LCD_RS_PIN PB4
+#define LCD_E_PIN  PB3
 
 static void lcd_enable(void) {
     PORTB |= (1 << LCD_E_PIN);
@@ -63,7 +87,7 @@ void lcd_set_cursor(uint8_t col, uint8_t row) {
 }
 
 void ADC_init(void) {
-    ADMUX  = (1 << REFS0);
+    ADMUX = (1 << REFS0);
     ADCSRA = (1 << ADEN) | (1 << ADPS2) | (1 << ADPS1) | (1 << ADPS0);
 }
 
@@ -74,22 +98,30 @@ uint16_t ADC_read(uint8_t channel) {
     return ADC;
 }
 
-volatile uint16_t rawLight = 0;
-
-void Task_ReadADC(void) {
-    rawLight = ADC_read(0);
-    char buf[17];
-    lcd_set_cursor(0, 0);
-    snprintf(buf, sizeof(buf), "Light: %-5u   ", rawLight);
-    lcd_print(buf);
-}
+const uint32_t INTERVAL_MS = 100;
+uint32_t previousMillis = 0;
 
 int main(void) {
-    lcd_init();
+    timer0_millis_init();
     ADC_init();
+    lcd_init();
+    sei();
+
+    lcd_set_cursor(0, 0);
+    lcd_print("Sensor Reading:");
+
+    char buf[17];
 
     while (1) {
-        Task_ReadADC();
-        _delay_ms(10);
+        uint32_t currentMillis = millis();
+
+        if (currentMillis - previousMillis >= INTERVAL_MS) {
+            previousMillis = currentMillis;
+            uint16_t sensorValue = ADC_read(0); // A0 = ADC Channel 0
+            
+            lcd_set_cursor(0, 1);
+            snprintf(buf, sizeof(buf), "%-5u    ", sensorValue);
+            lcd_print(buf); 
+        }
     }
 }

@@ -3,11 +3,50 @@
 #endif
 
 #include <avr/io.h>
+#include <avr/interrupt.h>
 #include <util/delay.h>
 #include <stdio.h>
 
-#define LCD_RS_PIN PB0
-#define LCD_E_PIN  PB1
+volatile uint32_t timer0_millis = 0;
+
+void timer0_millis_init(void) {
+    TCCR0A = (1 << WGM01);
+    OCR0A = 249;
+    TIMSK0 = (1 << OCIE0A);
+    TCCR0B = (1 << CS01) | (1 << CS00);
+}
+
+ISR(TIMER0_COMPA_vect) {
+    timer0_millis++;
+}
+
+uint32_t millis(void) {
+    uint32_t m;
+    cli();
+    m = timer0_millis;
+    sei();
+    return m;
+}
+
+void USART_init(uint32_t baud) {
+    uint16_t ubrr = (F_CPU / 16 / baud) - 1;
+    UBRR0H = (uint8_t)(ubrr >> 8);
+    UBRR0L = (uint8_t)ubrr;
+    UCSR0B = (1 << TXEN0);
+    UCSR0C = (1 << UCSZ01) | (1 << UCSZ00);
+}
+
+void USART_transmit(char data) {
+    while (!(UCSR0A & (1 << UDRE0)));
+    UDR0 = data;
+}
+
+void USART_send_string(const char* str) {
+    while (*str) USART_transmit(*str++);
+}
+
+#define LCD_RS_PIN PB4
+#define LCD_E_PIN  PB3
 
 static void lcd_enable(void) {
     PORTB |= (1 << LCD_E_PIN);
@@ -63,7 +102,7 @@ void lcd_set_cursor(uint8_t col, uint8_t row) {
 }
 
 void ADC_init(void) {
-    ADMUX  = (1 << REFS0);
+    ADMUX = (1 << REFS0);
     ADCSRA = (1 << ADEN) | (1 << ADPS2) | (1 << ADPS1) | (1 << ADPS0);
 }
 
@@ -74,22 +113,43 @@ uint16_t ADC_read(uint8_t channel) {
     return ADC;
 }
 
-volatile uint16_t rawLight = 0;
+const uint32_t SENSOR_INTERVAL = 1000; 
+const uint32_t UART_INTERVAL   = 1000;   
 
-void Task_ReadADC(void) {
-    rawLight = ADC_read(0);
-    char buf[17];
-    lcd_set_cursor(0, 0);
-    snprintf(buf, sizeof(buf), "Light: %-5u   ", rawLight);
-    lcd_print(buf);
-}
+uint32_t prevSensorMillis = 0;
+uint32_t prevUartMillis   = 0;
+
+uint16_t sensorValue = 0;
 
 int main(void) {
-    lcd_init();
+    timer0_millis_init();
+    USART_init(9600);
     ADC_init();
+    lcd_init();
+    sei();
+
+    lcd_set_cursor(0, 0);
+    lcd_print("Sensor Reading:");
+
+    char buf[17];
 
     while (1) {
-        Task_ReadADC();
-        _delay_ms(10);
+        uint32_t currentMillis = millis();
+
+        if (currentMillis - prevSensorMillis >= SENSOR_INTERVAL) {
+            prevSensorMillis = currentMillis;
+            sensorValue = ADC_read(0);
+
+            lcd_set_cursor(0, 1);
+            snprintf(buf, sizeof(buf), "%-5u    ", sensorValue);
+            lcd_print(buf); 
+        }
+
+        if (currentMillis - prevUartMillis >= UART_INTERVAL) {
+            prevUartMillis = currentMillis;
+
+            snprintf(buf, sizeof(buf), "Sensor Value: %u\r\n", sensorValue);
+            USART_send_string(buf);
+        }
     }
 }
