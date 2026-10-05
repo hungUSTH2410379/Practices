@@ -1,33 +1,42 @@
-#include <Arduino.h>
+#ifndef F_CPU
+#define F_CPU 16000000UL
+#endif
 
-#define STEP_PIN   2
-#define DIR_PIN    3
-#define ENABLE_PIN 4
+#include <avr/io.h>
+#include <util/delay.h>
+#include <stdbool.h>
+
+#define STEP_PIN   PD2
+#define DIR_PIN    PD3
+#define ENABLE_PIN PD4
 
 void stepMotor(uint16_t steps, bool dir, uint16_t step_delay_us) {
-    digitalWrite(DIR_PIN, dir ? HIGH : LOW);
+    if (dir) {
+        PORTD |= (1 << DIR_PIN);
+    } else {
+        PORTD &= ~(1 << DIR_PIN);
+    }
     
     for (uint16_t i = 0; i < steps; i++) {
-        digitalWrite(STEP_PIN, HIGH);
-        delayMicroseconds(10); // A4988 needs minimum 1us HIGH pulse
-        digitalWrite(STEP_PIN, LOW);
-        delayMicroseconds(step_delay_us);
+        PORTD |= (1 << STEP_PIN);
+        _delay_us(10); // Minimum HIGH pulse
+        PORTD &= ~(1 << STEP_PIN);
+        
+        // Microsecond variable delay loop
+        for (uint16_t d = 0; d < step_delay_us; d++) {
+            _delay_us(1);
+        }
     }
 }
 
-void setup() {
-    pinMode(STEP_PIN, OUTPUT);
-    pinMode(DIR_PIN, OUTPUT);
-    pinMode(ENABLE_PIN, OUTPUT);
+int main(void) {
+    DDRD |= (1 << STEP_PIN) | (1 << DIR_PIN) | (1 << ENABLE_PIN);
 
     // Enable driver (Active LOW)
-    digitalWrite(ENABLE_PIN, LOW);
-}
+    PORTD &= ~(1 << ENABLE_PIN);
 
-void loop() {
-    // 200 steps = 1 revolution (1.8° full step)
-    stepMotor(2000, true, 4000);   // Clockwise
-    delay(100);
-
-   
+    while (1) {
+        stepMotor(2000, true, 4000);   // Clockwise
+        _delay_ms(100);
+    }
 }
