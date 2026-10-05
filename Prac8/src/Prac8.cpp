@@ -1,86 +1,100 @@
-/*
- * Practice 8: I2C and sensor - Grove Beginner Kit for Arduino
- * ---------------------------------------------------------------
- * ONE FILE version: the low-level I2C driver and the BMP280 sensor
- * code are all combined here - no separate i2c.h / i2c.cpp needed.
- *
- * WIRING: nothing to wire up - the Air Pressure module's Grove cable
- * is already plugged into one of the shield's "I2C" sockets, which are
- * hard-wired to the ATmega328P's hardware TWI pins:
- *     SDA -> A4 (PC4)
- *     SCL -> A5 (PC5)
- */
+#ifndef F_CPU
+#define F_CPU 16000000UL
+#endif
 
-#include <Arduino.h>
 #include <avr/io.h>
+#include <util/delay.h>
 #include <stdint.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <stdio.h>
 
 /* =========================================================================
- *  SECTION 1: I2C (TWI) driver - register-level, no Wire.h
+ *  SECTION 1: USART driver
  * ========================================================================= */
 
-#define I2C_WRITE 0   // SLA+W : bit 0 = 0
-#define I2C_READ  1   // SLA+R : bit 0 = 1
-#define I2C_SCL_FREQ 100000UL   // 100 kHz, I2C "Standard Mode"
+void usart_init(uint32_t baud) {
+    uint16_t ubrr = (F_CPU / 16 / baud) - 1;
+    UBRR0H = (uint8_t)(ubrr >> 8);
+    UBRR0L = (uint8_t)ubrr;
+    UCSR0B = (1 << TXEN0);
+    UCSR0C = (1 << UCSZ01) | (1 << UCSZ00);
+}
 
-// Configure TWI bit-rate for 100 kHz SCL, then enable the TWI hardware.
+void usart_transmit(char data) {
+    while (!(UCSR0A & (1 << UDRE0)));
+    UDR0 = data;
+}
+
+void usart_send_string(const char* str) {
+    while (*str) usart_transmit(*str++);
+}
+
+void usart_send_hex(uint8_t val) {
+    char buf[5];
+    snprintf(buf, sizeof(buf), "%02X", val);
+    usart_send_string(buf);
+}
+
+/* =========================================================================
+ *  SECTION 2: I2C (TWI) driver - register-level
+ * ========================================================================= */
+
+#define I2C_WRITE 0   
+#define I2C_READ  1   
+#define I2C_SCL_FREQ 100000UL   
+
 void i2c_init(void) {
-    TWSR = 0x00;  // prescaler = 1 (TWPS1:0 = 00)
+    TWSR = 0x00;  
     TWBR = (uint8_t)(((F_CPU / I2C_SCL_FREQ) - 16) / 2);
     TWCR = (1 << TWEN);
 }
 
-// START condition (or repeated START if bus already active).
 void i2c_start(void) {
     TWCR = (1 << TWINT) | (1 << TWSTA) | (1 << TWEN);
     while (!(TWCR & (1 << TWINT)));
 }
 
-// STOP condition.
 void i2c_stop(void) {
     TWCR = (1 << TWINT) | (1 << TWSTO) | (1 << TWEN);
     while (TWCR & (1 << TWSTO));
 }
 
-// Send one byte (address byte OR a data byte).
 void i2c_write(uint8_t data) {
     TWDR = data;
     TWCR = (1 << TWINT) | (1 << TWEN);
     while (!(TWCR & (1 << TWINT)));
 }
 
-// Read one byte, master replies ACK ("send more").
 uint8_t i2c_read_ack(void) {
     TWCR = (1 << TWINT) | (1 << TWEN) | (1 << TWEA);
     while (!(TWCR & (1 << TWINT)));
     return TWDR;
 }
 
-// Read one byte, master replies NACK ("that was the last byte").
 uint8_t i2c_read_nack(void) {
     TWCR = (1 << TWINT) | (1 << TWEN);
     while (!(TWCR & (1 << TWINT)));
     return TWDR;
 }
 
-// Status code of the last TWI operation (top 5 bits of TWSR).
 uint8_t i2c_get_status(void) {
     return (TWSR & 0xF8);
 }
 
 /* =========================================================================
- *  SECTION 2: BMP280 air-pressure / temperature sensor (I2C)
+ *  SECTION 3: BMP280 air-pressure / temperature sensor (I2C)
  * ========================================================================= */
 
-#define BMP280_ADDR_PRIMARY    0x77   // Grove's default (right pads bridged)
-#define BMP280_ADDR_SECONDARY  0x76   // fallback for some boards/clones
+#define BMP280_ADDR_PRIMARY    0x77   
+#define BMP280_ADDR_SECONDARY  0x76   
 #define BMP280_CHIP_ID         0x58
 
 #define REG_CHIP_ID     0xD0
 #define REG_CTRL_MEAS   0xF4
 #define REG_CONFIG      0xF5
-#define REG_CALIB_START 0x88   // 24 bytes of calibration data start here
-#define REG_DATA_START  0xF7   // press(3 bytes) + temp(3 bytes)
+#define REG_CALIB_START 0x88   
+#define REG_DATA_START  0xF7   
 
 static uint8_t bmp280_addr = BMP280_ADDR_PRIMARY;
 
@@ -92,10 +106,8 @@ typedef struct {
 } bmp280_calib_t;
 
 static bmp280_calib_t calib;
-static float t_fine;   // shared between temp/pressure compensation, per datasheet
+static float t_fine;   
 
-// Read `len` bytes starting at register `reg`: write the pointer, then a
-// fresh START to burst-read it back (ACK on every byte except the last).
 static void bmp280_read_regs(uint8_t reg, uint8_t *buf, uint8_t len) {
     i2c_start();
     i2c_write((bmp280_addr << 1) | I2C_WRITE);
@@ -117,8 +129,6 @@ static void bmp280_write_reg(uint8_t reg, uint8_t value) {
     i2c_stop();
 }
 
-// Find the sensor (0x77 then 0x76), load its calibration constants,
-// and start it in continuous (Normal) measurement mode.
 bool bmp280_init(void) {
     uint8_t id;
 
@@ -145,13 +155,12 @@ bool bmp280_init(void) {
     calib.dig_P8 = (int16_t)(raw[21] << 8 | raw[20]);
     calib.dig_P9 = (int16_t)(raw[23] << 8 | raw[22]);
 
-    bmp280_write_reg(REG_CTRL_MEAS, 0b00100111); // osrs_t=x1, osrs_p=x1, mode=Normal
-    bmp280_write_reg(REG_CONFIG, 0x00);          // standby 0.5ms, filter off
+    bmp280_write_reg(REG_CTRL_MEAS, 0b00100111); 
+    bmp280_write_reg(REG_CONFIG, 0x00);          
 
     return true;
 }
 
-// Read raw registers and apply Bosch's compensation formulas.
 void bmp280_read(float *temp_c, float *pressure_hpa) {
     uint8_t d[6];
     bmp280_read_regs(REG_DATA_START, d, 6);
@@ -159,14 +168,12 @@ void bmp280_read(float *temp_c, float *pressure_hpa) {
     int32_t adc_P = ((int32_t)d[0] << 12) | ((int32_t)d[1] << 4) | (d[2] >> 4);
     int32_t adc_T = ((int32_t)d[3] << 12) | ((int32_t)d[4] << 4) | (d[5] >> 4);
 
-    // temperature compensation
     float var1 = (((float)adc_T) / 16384.0f - ((float)calib.dig_T1) / 1024.0f) * ((float)calib.dig_T2);
     float var2 = ((((float)adc_T) / 131072.0f - ((float)calib.dig_T1) / 8192.0f) *
                   (((float)adc_T) / 131072.0f - ((float)calib.dig_T1) / 8192.0f)) * ((float)calib.dig_T3);
     t_fine = var1 + var2;
     *temp_c = (var1 + var2) / 5120.0f;
 
-    // pressure compensation (uses t_fine from above)
     float p1 = ((float)t_fine / 2.0f) - 64000.0f;
     float p2 = p1 * p1 * ((float)calib.dig_P6) / 32768.0f;
     p2 = p2 + p1 * ((float)calib.dig_P5) * 2.0f;
@@ -186,31 +193,36 @@ void bmp280_read(float *temp_c, float *pressure_hpa) {
 }
 
 /* =========================================================================
- *  SECTION 3: setup() / loop()
+ *  SECTION 4: main()
  * ========================================================================= */
 
-void setup() {
-    Serial.begin(115200);
+int main(void) {
+    usart_init(115200);
     i2c_init();
-    delay(300);
+    _delay_ms(300);
 
     if (bmp280_init()) {
-        Serial.print(F("BMP280 found at 0x"));
-        Serial.println(bmp280_addr, HEX);
+        usart_send_string("BMP280 found at 0x");
+        usart_send_hex(bmp280_addr);
+        usart_send_string("\r\n");
     } else {
-        Serial.println(F("BMP280 not found at 0x76 or 0x77 - check the Grove cable is in an I2C socket."));
+        usart_send_string("BMP280 not found at 0x76 or 0x77 - check the Grove cable is in an I2C socket.\r\n");
     }
-}
 
-void loop() {
-    float temp_c, pressure_hpa;
-    bmp280_read(&temp_c, &pressure_hpa);
+    char temp_str[10];
+    char press_str[10];
+    char out_buf[64];
 
-    Serial.print(F("Temp: "));
-    Serial.print(temp_c, 1);
-    Serial.print(F(" C   Pressure: "));
-    Serial.print(pressure_hpa, 1);
-    Serial.println(F(" hPa"));
+    while (1) {
+        float temp_c, pressure_hpa;
+        bmp280_read(&temp_c, &pressure_hpa);
 
-    delay(1000);
+        dtostrf(temp_c, 4, 1, temp_str);
+        dtostrf(pressure_hpa, 6, 1, press_str);
+
+        snprintf(out_buf, sizeof(out_buf), "Temp: %s C   Pressure: %s hPa\r\n", temp_str, press_str);
+        usart_send_string(out_buf);
+
+        _delay_ms(1000);
+    }
 }
